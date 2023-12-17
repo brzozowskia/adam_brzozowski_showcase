@@ -1,0 +1,14 @@
+name: generic_aws_cli_env
+channels:
+  - conda-forge
+  - default
+dependencies:
+  - python>=3.11
+  - numpy
+  - pandas
+  - pip
+  - boto3
+  - ipykernel
+  - openpyxl
+  - sqlalchemy
+  - nbconvert
