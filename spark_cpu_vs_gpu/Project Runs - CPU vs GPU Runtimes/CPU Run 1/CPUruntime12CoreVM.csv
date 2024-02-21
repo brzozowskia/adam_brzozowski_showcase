@@ -1,0 +1,5 @@
+,Runtime,Stage,Seconds
+0,CPU,Notebook Total Processing Time,1414.394202
+1,CPU,Preprocessing Time,568.803246
+2,CPU,Visualization Time,352.152851
+3,CPU,Machine Learning Time,493.366295
