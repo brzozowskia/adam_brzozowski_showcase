@@ -1,0 +1,585 @@
+---
+title: "HES_CSCI_106_Group_Project"
+author: "Adam,  Anurag, Sebastian"
+date: "2022-12-04"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# Introduction 
+
+To begin, we prepare our data by loading it and examining key data quality parameters. 
+
+
+```{r}
+
+set.seed(1000)
+
+df <- read.csv("KC_House_Sales.csv")
+str(df)
+
+```
+
+The above data frame structure indicates that there are some categorical variables. The first step will be to confirm that these are categorical and transform to factors if applicable. To identify the factor variables, we decided that <= ~15 unique values in the data set would indicate that the variable is a factor. The loop below helped us do that:
+
+```{r}
+
+for ( i in 1:ncol(df)){
+  
+  print(paste(i, length(unique(df[,i]))))
+}
+
+```
+
+
+We found that a number of homes did not have a basment. As such, we chose to develop this variable into a bernoulli factor.
+
+```{r}
+
+hist(df$sqft_basement)
+
+```
+
+We chose to represent this data point as a factor variable. 
+
+```{r}
+
+df$sqft_basement <- ifelse(df$sqft_basement == 0 , 0, 1)
+
+```
+
+
+Using indexes of the variables identified as factors above, we transform the applicable columns into factors.
+
+```{r}
+
+# handle factor columns by storing them first
+factor_cls <- c(8:11,14)
+
+for(j in factor_cls){
+  
+  df[,j] <- as.factor(df[,j])
+}
+
+str(df)
+
+```
+
+Next, we need to clean up the dollars in the price variable. We need to have a clean, numeric vector. As written, the data is going to be a character vector.
+
+```{r}
+
+# function to clean up all the house prices with dollar signs and commas in them
+house_price_cleaner <- function(x){
+  
+  tmp <- trimws(x)
+  tmp <- substr(tmp,2,nchar(tmp))
+  tmp = gsub(",",replacement='',x=tmp)
+  return(tmp)
+}
+
+# clean up the data and turn into a numeric variable
+df$price <- as.numeric(sapply(X=df$price, FUN = house_price_cleaner))
+
+```
+
+We perform pre-processing in order to capture the effects of how old the building stock is. We sought a method to account for the net age of the building stock. We determined that renovating a home would replenish the building stock for that home - effectively making it a newer home. We developed two features to test in the modeling based on that assumption, as follows: 
+
+- Years since built - calculated as difference between year of date sold and date built. 
+
+- Years since renovated - calculated since difference of year sold and date renovated. If not renovation date, defaults to years since built.  
+
+```{r}
+
+df[c("date")] <- lapply(df[c("date")], function(x) as.numeric(substr(x, 1, 4)))
+df[c("years_since_built")] <- lapply(df[c("yr_built")], function(x) df$date - x)
+df[c("years_since_renovated")] <- lapply(df[c("yr_renovated")], function(x) ifelse(x!=0,df$date - x, df$years_since_built) )
+
+```
+
+Below we examine the data set of continuous predictors that we will perform scatterplots on. 
+
+```{r}
+
+exclude_cols_pairs <- c(factor_cls, 1, 17:19 )
+plt_cols <- !(1:ncol(df) %in% exclude_cols_pairs)
+
+str(  df[,plt_cols] )
+
+
+
+```
+
+We also need to check for missing values to drop those observations. The data frame shows 0 missing values so we don't need to worry about dropping any observations.
+
+```{r}
+
+sum(rowSums(is.na(df)) )
+
+```
+
+Below we decided to visualize the predictors one at a time against the dependent variable in order to identify strong predictors as well as variables which would have a heteroskedastic fit in a bivariate linear regression since these errors could accumulate in a multivariate regression - so it's good to be aware of them.
+
+```{r}
+
+
+cls_nm <- colnames(df)[plt_cols]
+
+for(i in cls_nm){
+  
+  plot(df[,c(i, "price")], xlab=i, ylab="price")
+  
+}
+
+str(  df[,cls_nm] )
+
+
+```
+
+Both the correlation matrix and the correllogram show that there are a number of predictor variables that do not have a strong linear relationship with price. It may be that some of these variables are factors and we missed them in the first pass. It may also mean that they have low information value. Analyzing the weak predictors will help us determine if we need to drop them. In general, it may be expedient to do this by hand up front before fitting the full model or to employ a technique like the lasso to select the right variables first before subsequently fitting a model. We chose to leave them in the model first before dropping any specific variables so that we could see the impacts clearly.
+
+
+```{r}
+
+str(df[,plt_cols])
+
+```
+
+
+```{r}
+
+library("corrplot")
+
+cr <- cor(df[,plt_cols])
+corrplot(cr,mar=c(0,0,2,0),main ="Continuous Predictors Correlation Matrix")
+# fixes broken corrplot default https://stefaneng.github.io/corrplot-title-cut-off/ 
+
+```
+
+In general, we can see that home prices are high, but that they are also skewed to the right. There are a very small number of homes that are valued at more than 1 million USD. However, there are also a very small number of homes that are worth more than 2 million dollars. 
+
+```{r}
+
+library("ggplot2")
+
+ggplot(data=df, aes(x=price)) + geom_histogram(col="Red", fill="Red") + ggtitle("Histogram of Home Prices - Bellevue Washington")
+
+```
+
+
+We decided to look at the spatial distribution of the data to see if there were spatial relationships between the location of the home and its price. If super wealthy consumers do cluster together, we wanted to see that in order to better capture these data points - some of which would otherwise be extreme outliers. Using the lat and lon coordinates of each home, we were able plot these points to identify spatial patterns. After several iterations, we decided the most succinct way to explore these spatial relationships was to plot the data in two maps based on the home value. the first map would show where home values exceeded 1 million USD. The second would show where it was smaller. The results are strikingly clear. 
+
+The spatial data shows that the most expensive homes and neighborhoods on the map abut water. Mercer Island is completely surrounded by water and is dotted with expensive homes. Downtown Bellevue itself abuts water on three sides, and also has the advantage of being in the urban core - and it is over represented as well. Just across the bridge, similar groups are evident in downtown seattle. Zooming in and out on the map also makes it very easy to see that waterfront property that abuts inland lakes alos tends to be more valuable. It is very likely that the combination of several industrial giants in the seattle (Boeing) and Redmont (Microsoft) area revolves around commuting preferences of key executives and personnel at these companies. While Microsoft is one of the most consistently profitable and well paying companies in the world, Boeing is a production industry and performs in much more modest margins. Boeing field can be seen below Seattle to the left of Mercer Island. 
+
+Notably, when comparing the two maps, we can see that almost none of the homes worth more than 1 million USD can be found below Renton. Agglomerative effects of more wealthier consumers is more of an expected outcome vs a null hypothesis that the price of these homes depend solely on their size and could be found anywhere.
+
+
+```{r}
+
+library("leaflet")
+# https://rstudio.github.io/leaflet/colors.html
+
+dfe <- df[df$price >= 1000000 ,]
+
+pal <- colorNumeric(
+  palette = "Reds",
+  domain = dfe$price)
+
+
+#https://rstudio.github.io/leaflet/markers.html
+leaflet(dfe) %>% addTiles() %>%
+  addCircleMarkers(
+    lng = ~long, 
+    lat = ~lat, 
+    color = "Red",
+    radius = 1
+  )
+
+
+```
+
+We can clearly see that the homes that are less than 1 million dollars tend to show up below renton. Bottom line is that we need an efficient spatial clustering to separate the homes on the extreme end of the distribution. 
+
+```{r}
+
+library("leaflet")
+# https://rstudio.github.io/leaflet/colors.html
+
+dfe <- df[df$price < 1000000 ,]
+
+pal <- colorNumeric(
+  palette = "Reds",
+  domain = dfe$price)
+
+
+#https://rstudio.github.io/leaflet/markers.html
+leaflet(dfe) %>% addTiles() %>%
+  addCircleMarkers(
+    lng = ~long, 
+    lat = ~lat, 
+    color = "Red",
+    radius = 1
+  )
+
+```
+
+In this section of code, we create cluster assignments for the map.
+
+```{r}
+
+# refreshed myself on hierarchical clustering with this page
+# https://www.datacamp.com/tutorial/hierarchical-clustering-R 
+d_m <- dist(scale(df[,c("lat", "long")]))
+
+cL <- hclust(d_m, method='average')
+
+cL_assign <- cutree(cL, k = 10)
+
+df$cluster <- cL_assign
+
+```
+
+If location is indeed involved, the spatial clustering should be able to pick that out. There seem to be fewer extreme outliers in some of the clusters as expected - just based on looking at the averages.
+
+```{r}
+
+dft = aggregate(price ~ cluster, FUN = mean, data =df )
+
+dft
+
+```
+
+Here we visualize the distributions of the data based on their geospatial cluster assignments. We clearly have clusters with significant variability and outliers that may cause us to have decreased performance on a linear model without any intervention.
+
+```{r}
+
+ggplot(data=df, aes(x=as.factor(cluster), y = price))+ geom_violin()
+
+```
+
+The below map shows how the data would be partitioned spatially into systematic cluster groups. In general, we're looking to capture some of the extreme value variability within specific clusters to see if that improves the fit of the model from reduced variance in other clusters. 
+
+```{r}
+
+library("leaflet")
+# https://rstudio.github.io/leaflet/colors.html
+
+dfe = df
+
+factpal <- colorFactor(topo.colors(15), df$cluster)
+
+#https://rstudio.github.io/leaflet/markers.html
+leaflet(dfe) %>% addTiles() %>%
+  addCircleMarkers(
+    lng = ~long, 
+    lat = ~lat, 
+    color = ~factpal(cluster),
+    radius = 1
+  )
+
+
+```
+
+While we found working with the clusters to generate statistically meaningful results, we did progress to a point in the modeling where problems with imbalanced sampling caused us to need to drop these from the modeling.
+
+```{r}
+
+df$cluster <- NULL
+
+```
+
+
+Here we examine the structure of the data set based on all prior pre-processing rules to confirm out satisfaction with the variables.
+
+```{r}
+
+str(df)
+
+```
+
+Here we drop columns we don't need for the rest of the regression modeling and conclude our preprocessing steps by turning the lat-lon driven cluster assignments into factors. 
+
+```{r}
+
+df_cols_drop <- c("date", "yr_built", "yr_renovated", "lat", "long", "zipcode", "id")
+df$id <- NULL
+
+df <- df[,!(colnames(df) %in% df_cols_drop)]
+str(df)
+
+```
+
+As per the instructions, the first model we did was a stepwise regression model. What we found was that we needed to select a parsimonious set of variables that would be the most useful since the best subset model would not run on a large data set. 
+
+```{r}
+
+set.seed(1023)
+n <- nrow(df)
+ind <- sample(1:n, n*0.7)
+df_train <- data.frame(df[ind, ])
+df_test <- data.frame(df[-ind, ])
+kclmod <- lm(price~. ,data=df_train)
+summary(kclmod)
+
+```
+
+The results below indicates that sqft_basement is not significant but the other variables are.
+
+```{r}
+
+library(olsrr)
+step_aic_m <- ols_step_backward_aic(kclmod)
+step_aic_m 
+
+```
+
+We decided to double check that our variable selection results were consistent with another methodology. 
+
+```{r}
+  
+olsrr::ols_step_backward_p(kclmod)
+
+```
+
+Our modeling results indicate that the full model, and a model in which the following variables were eliminated would be better performing. 
+
+```{r}
+
+lm2 <- update(kclmod,~.-sqft_lot)
+lm2 <- update(kclmod,~.-sqft_above)
+summary(lm2)
+
+```
+
+According to p-values, the reduced model that excludes sqft basement is not statistcally different from the full model that includes it so we choose to go with the reduced model since it is more parsimonious and has the same predictive power. 
+
+```{r}
+
+anova(lm2, kclmod)
+
+```
+
+Next, we check the assumptions of reduced model in order to determine if it satisfies the assumption of the linear regression model. The assumptions are as follows:
+
+Assumption - no dependence of the fitted values with the residuals. This assumption is violated with a clear funnel shape pattern. We will need to correct for this.
+
+Assumption - normality of the residuals - we can clearly see that the Q-Q plot indicates that the residuals are not normally distributed. 
+
+Assumption of equal variances of the residuals - we can clearly see a slope to the fitted values vs the standardized residuals. This tells us we need to address heteroskedasticity. 
+
+Assumption of no or few outliers that exert influence on the model - point 7253 is close to the cook's distance but not over it. The diagnostic line does not indicate any leverage points influencing the model. 
+
+```{r}
+
+plot(lm2)
+
+```
+
+We employ remedial methods in this section to deal with the violations of the assumptions of the linear model. We observe from the box-cox modeling that the depenendent variable should be transformed using a log transformation. 
+
+```{r}
+
+library(MASS)
+boxcox(lm2, lambda=seq(-1,1, by=.05))
+
+```
+
+```{r}
+
+df_train$price <- log(df_train$price)
+
+lm3 <- lm(price~. ,data=df_train)
+lm3 <- update(kclmod,~.-sqft_basement)
+summary(lm3)
+
+```
+
+
+The diagnostics below clearly show that there is still linear dependence on the residuals. As such, we will need to perform weighted least squares to apply additional remediation. 
+```{r}
+
+plot(lm3)
+
+```
+
+We can clearly see that some of the variables have very high VIF and should be dropped from the model. Sqft_living, years_since_built, and years_since_renovated have high VIF. We explored this by examining the ridge, lasso methods. However, these techniques ultimately did not improve the model fit and so we ended up performing another regression in which we specifically dropped these variables. 
+
+```{r}
+
+car::vif(lm3)
+
+```
+
+```{r}
+
+x <- model.matrix(price~. ,data=df_train)[,-c(1)]
+y <- df_train$price
+
+```
+
+(1) RIDGE
+
+Here we fit a ridge model, extract coefficients and plot the model as well as measure training set R-squared.
+
+```{r}
+
+library("glmnet")
+RidgeMod <- glmnet(x, y, alpha=0, nlambda=100,lambda.min.ratio=0.0001)
+par(mfrow=c(1,1))
+cvRidgeMod <- cv.glmnet(x, y, alpha=0, nlambda=100,lambda.min.ratio=0.0001)
+plot(cvRidgeMod)
+best.lambda.ridge <- cvRidgeMod$lambda.min
+predict(RidgeMod, s=best.lambda.ridge, type="coefficients")
+y_hat.ridge <- predict(RidgeMod, s = best.lambda.ridge, newx = x)
+cor(y_hat.ridge, df_train$price)^2
+```
+
+
+
+(2) LASSO
+
+Here we fit a LASSO model, extract coefficients and plot the model as well as measure training set R-squared.
+
+```{r}
+
+
+LassoMod <- glmnet(x, y, alpha = 1, nlambda = 100,lambda.min.ratio = 0.0001)
+
+plot(LassoMod,xvar = "norm",label = TRUE)
+CvLassoMod <- cv.glmnet(x, y, alpha = 1, nlambda = 100,lambda.min.ratio = 0.0001)
+plot(CvLassoMod)
+best.lambda.lasso <- CvLassoMod$lambda.min
+coef(CvLassoMod, s = "lambda.min")
+
+y_hat.lasso = predict(LassoMod, s = best.lambda.lasso, newx = x)
+cor(y_hat.lasso, df_train$price)^2
+
+```
+
+In this section, we drop collinear predictors sqft_living, sqft_above, years_since_built, years_since_renovated in order to improve model performance. 
+
+After some manual manipulation to drop some collinear variables, we landed on the following linear model. It has lower R-squared on the training data, but we believe it will perform better on the test set because it does not suffer from as much variance inflation / multicollinearity. 
+
+```{r}
+
+df_train_reduced <- df_train[, -c(4, 11, 12, 15)]
+x <- model.matrix(price~. ,data=df_train_reduced)[,-c(1)]
+y <- df_train_reduced$price
+
+lm4 <- lm(price ~. , data= df_train_reduced)
+summary(lm4)
+
+car::vif(lm4)
+
+```
+
+Model visual diagnostics are satisfactory.
+
+```{r}
+
+plot(lm4)
+
+olsrr::ols_test_breusch_pagan(lm4)
+
+```
+
+
+For our alternative approach, we chose to train a regression tree. 
+
+```{r}
+
+library("rpart")
+
+rg_tree <- rpart( price ~. , data=df_train_reduced)
+
+plot(rg_tree)
+text(rg_tree, use.n = TRUE)
+
+```
+
+The performance of the regression tree on the training data was very poor compared to the other regression techniques.
+
+```{r}
+
+preds_tree <- predict(rg_tree, newdata = df_train)
+cor(preds_tree, df_train$price)^2
+
+```
+
+Next, we compute our test set performances. In order to do that, we create the test set model matrix and dependent variable array as follows: 
+
+```{r}
+
+x_test <- model.matrix(price~. ,data=df_test)[,-c(1)]
+y_test <- df_test$price
+
+```
+
+For comparative purposes, we evaluate R-Squared against all of our regression techniques in order to assess fit. Up to this point, we have chosen a multiple linear regression without the sqft_basement variable as the champion model. Since our models were trained on the log of price as the response variable, based on what we learned during the remediation phase of the study, we will need to exponentiate our predictions from the test data. 
+
+```{r}
+
+# regression tree
+preds_tree <- exp(predict(rg_tree, newdata = df_test))
+#cor(preds_tree, df_test$price)^2
+
+# linear model
+preds_lm <- exp(predict(lm3, newdata=df_test))
+#cor(preds_lm, df_test$price)
+
+# lasso
+y_hat.lasso = exp(predict(LassoMod, s = best.lambda.lasso, newx = x_test))
+#cor(y_hat.lasso, df_test$price)^2
+
+# ridge
+y_hat.ridge = exp(predict(LassoMod, s = best.lambda.ridge, newx = x_test))
+#cor(y_hat.ridge, df_test$price)^2
+
+
+df_results = data.frame(model_name = c("regression_tree", "linear_model", "lasso", "ridge"),
+                        model_results = c(cor(preds_tree, df_test$price)^2, 
+                                          cor(preds_lm, df_test$price)^2, 
+                                          cor(y_hat.lasso, df_test$price)^2,
+                                          cor(y_hat.ridge, df_test$price)^2
+                                          ))
+
+knitr::kable(df_results)
+
+```
+
+# Model Development Document 
+
+
+I. Model Purpose
+
+The modeling performed in this project was to explain home prices in King County in Washington State, which includes Seattle for sales between May 2014 and May 2015. We sought to identify the best variables and functional form to explain the valuations / prices. 
+
+II. Description of the data and quality
+
+In general, the data set had a number of homes which were probably overpriced. However, there was no reason to think that any of the prices might simply have been incorrect. We found spatial dependencies in the data, specifically around lakefront property near lake Sammamish. Homes in that area tended to be much more expensive than homes in other areas. Location based effects such as these are most likely the underlying causes for potentially irrational valuations in those areas.
+
+
+III. Model Development Process
+
+In developing our modeling, we began with a linear model and found that fitting the available predictors did not satisfy core assumptions of the linear modeling process. We undertook box-cox transformations of the dependent variable to the log scale in order to partially remediate the heteroskedasticity. Ultimately, we identified that our modeling was suffering from multicollinearity due to a number of the predictors being related to each other - which is not surprising when doing home price modeling. We removed these variables to remediate the multicollinearity and did ultimately achieve satisfactory performance vis a vis the core assumptions of the linear model. 
+
+During part of the model training process, we ran several iterations (not included) in which we found performance benefits from partitioning the data into regions based on latitude and longtitude. However, we found the testing process to be challenging due to the addition of more factors. Ultimately, we decided to remove the spatial clustering but we think there is some information that we had to sacrifice in order to ensure the model could be tested. 
+
+
+IV. Model Performance Testing
+
+At the conclusion of the training data fitting process, we were disappointed with the performance of linear model (as measured by R-squared). We expected alternatives such as LASSO, Ridge, and regression trees to potentially outperform on the test set because of what we felt was underfitting in the training data. However, much to our surprise, we found that the linear model actually performed quite well on the training data compared to its competitors. However, the LASSO ultimately did outperform even the linear model.
+
+
+V. Model Limitation and Assumptions
+
+Based on what we did see in earlier in the training process, in which the spatial data had some value, we know the modeling could be improved by working out a way to incorporate meaningful geospatial clusters into the regression. In its current form, the model assumes that only parameters that are specific to the structure itself are relevant - instead of the location in which the structure is located. 
+
+
+VI. Ongoing Model Monitoring Plan
+
+On an ongoing basis, we recommend examining the effects of changes in local neighborhoods if there is an influx of more affluent residents - as measured by large sale prices. We would expect agglomerative effects from these purchases to build up over time and cause model drift since the trained model would not have seen the underlying change in market conditions in the training data. 
